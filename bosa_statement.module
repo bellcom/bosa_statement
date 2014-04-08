@@ -20,9 +20,7 @@ function bosa_statement_menu(){
     'page callback' => 'drupal_get_form',
     'page arguments' => array('bosa_statement_form'),
     'access callback' => 'bosa_statement_access',
-    // Implement proper permissions
     'access arguments' => array(1),
-
   );
 
   return $items;
