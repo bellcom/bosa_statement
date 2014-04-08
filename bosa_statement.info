@@ -1,0 +1,4 @@
+name = BOSA Statement
+description = Show statements for sold products
+package = BOSA
+core = 7.x

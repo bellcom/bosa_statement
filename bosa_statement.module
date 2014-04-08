@@ -1,0 +1,285 @@
+<?php
+
+function bosa_statement_menu(){
+  $items = array();
+
+  $items['admin/bosa/statement'] = array(
+    'title' => 'BOSA Statement',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('bosa_statement_form'),
+
+    // Implement proper permissions
+    'access arguments' => array('access content'),
+
+  );
+
+  return $items;
+}
+
+function bosa_statement_form($form, $form_state){
+  if(isset($form_state['values'])){
+    $from = $form_state['values']['date_from'];
+    $to = $form_state['values']['date_to'];
+
+    $cancel = $form_state['values']['show_cancelled'];
+
+    $uid = FALSE;
+
+    // Format dates
+    $from = $from['year'] . '-' . str_pad($from['month'], 2, 0, STR_PAD_LEFT) . '-' . str_pad($from['day'], 2, 0, STR_PAD_LEFT) . ' 00:00:01';
+    $to = $to['year'] . '-' . str_pad($to['month'], 2, 0, STR_PAD_LEFT) . '-' . str_pad($to['day'], 2, 0, STR_PAD_LEFT) . ' 23:59:59';
+
+    if( (int)arg(3) ){
+      $uid = (int) arg(3);
+    }
+
+    $statement = bosa_statement_get_statement($from, $to, $cancel, $uid);
+    
+    if($form_state['clicked_button']['#parents'][0] == 'download'){
+      bosa_statement_get_csv($statement);
+    }
+  }
+
+  $header = array(
+    'Ordrenr.',
+    'Ordredato',
+    'Kundenavn/adr',
+    'Produkttitel',
+    'Endhedspris',
+    'Mængde / antal personer',
+    'I alt omsætning',
+    'Aflyst'
+  );
+
+  $form['date_from'] = array(
+    '#title' => t('Fra'),
+    '#type' => 'date',
+    '#default_value' => NULL
+  );
+
+  $form['date_to'] = array(
+    '#title' => t('Til'),
+    '#type' => 'date',
+  );
+
+  $form['show_cancelled'] = array(
+    '#title' => t('Vis aflyste aktiviteter'),
+    '#type' => 'checkbox',
+  );
+
+  $form['submit'] = array(
+    '#value' => t('Vis'),
+    '#type' => 'submit',
+  );
+
+  // Only show the download button, if a search is made.
+  if(isset($form_state['values'])){
+    $form['download'] = array(
+      '#value' => t('Download CSV'),
+      '#type' => 'submit',
+    );
+  }
+
+  $form['statement'] = array(
+    '#theme' => 'table',
+    '#header' => $header,
+    '#rows' => $statement,
+    '#empty' => 'Opdater søgekriterier',
+  );
+
+  return $form;
+}
+
+/**
+ * implements hook_form_submit()
+ */
+function bosa_statement_form_submit($form, &$form_state){
+  // Rebuild form on submit.
+  $form_state['rebuild'] = TRUE;
+
+}
+
+/**
+ * Generate statement array
+ */
+function bosa_statement_get_statement($from, $to, $cancel = FALSE, $uid = FALSE){
+  $grand_total_cancelled = 0;
+  $grand_total;
+
+  $sql = 'SELECT `entity_id`
+    FROM  `field_data_field_offer_dato`
+    WHERE `field_offer_dato_value` >= :from
+    AND `field_offer_dato_value` <= :to';
+
+  $params = array(':from' => $from, ':to' => $to);
+
+  if($uid){
+  $sql = 'SELECT `entity_id`
+    FROM  `field_data_field_offer_dato`
+    LEFT JOIN `commerce_product` ON
+      `commerce_product`.`product_id` = `field_data_field_offer_dato`.`entity_id`
+    WHERE `field_offer_dato_value` >= :from
+    AND `field_offer_dato_value` <= :to
+    AND `commerce_product`.`uid` = :uid 
+      ';
+
+    $params[':uid'] = $uid;
+  }
+
+  $query = db_query($sql, $params);
+
+  $result = $query->fetchAll();
+
+  if(empty($result)){
+    return array(array('Ingen resultater'));
+  }
+
+  foreach($result as $dbrow){
+    $product_ids[] = $dbrow->entity_id;
+  }
+
+  $query = new EntityFieldQuery();
+
+  $query->entityCondition('entity_type', 'commerce_line_item', '=')
+        ->fieldCondition('commerce_product', 'product_id', $product_ids, 'IN');
+
+  $line_item_ids = array_keys( array_shift( $query->execute() ) );
+
+  $line_items = commerce_line_item_load_multiple($line_item_ids);
+
+  foreach($line_items as $line_item){
+    try {
+      $commerce_order = commerce_order_load($line_item->order_id);
+
+      $product_id = $line_item->commerce_product[LANGUAGE_NONE][0]['product_id'];
+
+      $product = commerce_product_load($product_id);
+
+      $product_title = '<a href="/admin/commerce/products/'. $product->product_id .'">' . $product->title . '</a>';
+
+      if($commerce_order->status == "completed"){
+        $profile_id = $commerce_order->commerce_customer_billing[LANGUAGE_NONE][0]['profile_id'];
+
+        $customer_profile = commerce_customer_profile_load($profile_id);
+        // Generate customer information
+        $customer_address_line = $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['name_line'] . '<br>'
+                               . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['thoroughfare'] . '<br>'
+                               . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['postal_code'] . ' '
+                               . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['locality'] . '<br>'
+                               . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['country'];
+
+        // Generate price information
+        $price_format = commerce_currency_amount_to_decimal(
+                          $line_item->commerce_unit_price[LANGUAGE_NONE][0]['amount'],
+                          $line_item->commerce_unit_price[LANGUAGE_NONE][0]['currency_code']
+                        );
+
+        $price_total = $line_item->commerce_unit_price[LANGUAGE_NONE][0]['amount'] * $line_item->quantity;
+
+        $price_total_format = commerce_currency_amount_to_decimal(
+                                $price_total,
+                                $line_item->commerce_unit_price[LANGUAGE_NONE][0]['currency_code']
+                              );
+
+        $grand_total += $price_total;
+
+        $row[] = array(
+          $line_item->order_id,
+          date('d/m/Y', $commerce_order->created),
+          $customer_address_line,
+          $product_title,
+          $price_format,
+          $line_item->quantity,
+          $price_total_format,
+          ''
+        );
+
+      }
+    }
+    // Pokemon!
+    catch(Exception $e){
+    }
+  }
+
+  $grand_total_format = commerce_currency_amount_to_decimal(
+                          $grand_total,
+                          $line_item->commerce_unit_price[LANGUAGE_NONE][0]['currency_code']
+                        );
+
+  // Add cancellation info.
+  if($cancel){
+    foreach($product_ids as $product_id){
+      $all_info = bosa_reservation_get_info($product_id);
+
+      if(!empty($all_info)){
+        foreach($all_info as $info){
+          $refund_info = unserialize($info->data);
+
+          $commerce_order = commerce_order_load($info->order_id);
+
+          $product = commerce_product_load($product_id);
+
+          $profile_id = $commerce_order->commerce_customer_billing[LANGUAGE_NONE][0]['profile_id'];
+
+          $customer_profile = commerce_customer_profile_load($profile_id);
+          // Generate customer information
+          $customer_address_line = $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['name_line'] . '<br>'
+                                . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['thoroughfare'] . '<br>'
+                                . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['postal_code'] . ' '
+                                . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['locality'] . '<br>'
+                                . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['country'];
+
+          $total_cancelled_format = commerce_currency_amount_to_decimal($refund_info['amount'], 'DKK' );
+
+          $row[] = array(
+              $info->order_id,
+              date('d/m/Y', $commerce_order->created),
+              $customer_address_line,
+              $product->title,
+              '',
+              $refund_info['quantity'],
+              '',
+              $total_cancelled_format,
+            );
+
+        }
+        $grand_total_cancelled += $refund_info['amount'];
+      }
+    }
+
+    $grand_total_cancelled_format = commerce_currency_amount_to_decimal($grand_total_cancelled, 'DKK' );
+  }
+
+  $row[] = array('', '', '', '', '', '',  $grand_total_format, $grand_total_cancelled_format);
+  return $row;
+}
+
+/**
+ * Generate CSV from statement, send it for download
+ */
+function bosa_statement_get_csv($statement){
+  // The statement we get, is intended for rendering as HTML,
+  // so we need to clean up the tags, to make it presentable
+  // in CSV.
+  foreach ($statement as $value){
+    $row = array();
+    foreach($value as $column){
+      $row[] = strip_tags($column);
+    }
+
+    $rows[] = $row;
+  }
+
+  $filename = 'file.csv';
+  header( "Content-Type: text/csv;charset=utf-8" );
+  header( "Content-Disposition: attachment;filename=\"$filename\"" );
+  header("Pragma: no-cache");
+  header("Expires: 0");
+
+  $fp = fopen('php://output', 'w');
+  foreach ($rows as $fields){
+    fputcsv($fp, $fields);
+  }
+  fclose($fp);
+  exit();
+}
