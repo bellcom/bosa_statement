@@ -81,9 +81,13 @@ function bosa_statement_form($form, $form_state){
 
     $statement = bosa_statement_get_statement($from, $to, $cancel, $uid);
 
-    // If the user clicked download, send a csv file.
-    if($form_state['clicked_button']['#parents'][0] == 'download'){
+    // If the user clicked download, send a file.
+    if($form_state['clicked_button']['#parents'][0] == 'csv'){
       bosa_statement_get_csv($statement);
+    }
+
+    if($form_state['clicked_button']['#parents'][0] == 'xls'){
+      bosa_statement_get_xls($statement);
     }
   }
 
@@ -122,10 +126,16 @@ function bosa_statement_form($form, $form_state){
 
   // Only show the download button, if a search is made.
   if(isset($form_state['values'])){
-    $form['download'] = array(
+    $form['csv'] = array(
       '#value' => t('Download CSV'),
       '#type' => 'submit',
     );
+
+    $form['xls'] = array(
+      '#value' => t('Download XLS'),
+      '#type' => 'submit',
+    );
+
   }
 
   $form['statement'] = array(
@@ -284,7 +294,7 @@ function bosa_statement_get_statement($from, $to, $cancel = FALSE, $uid = FALSE)
           $product_title = '<a href="/admin/commerce/products/'. $product->product_id .'">' . $product->title . '</a>';
 
           $commerce_order = commerce_order_load($info->order_id);
-          
+
           $profile_id = $commerce_order->commerce_customer_billing[LANGUAGE_NONE][0]['profile_id'];
 
           $customer_profile = commerce_customer_profile_load($profile_id);
@@ -340,11 +350,8 @@ function bosa_statement_get_statement($from, $to, $cancel = FALSE, $uid = FALSE)
   return $row;
 }
 
-/**
- * Generate CSV from statement, send it for download
- */
-function bosa_statement_get_csv($statement){
-  // The statement we get, is intended for rendering as HTML,
+function bosa_statement_clean_statement($statement){
+   // The statement we get, is intended for rendering as HTML,
   // so we need to clean up the tags, to make it presentable
   // in CSV.
   foreach ($statement as $value){
@@ -356,6 +363,15 @@ function bosa_statement_get_csv($statement){
     $rows[] = $row;
   }
 
+  return $rows;
+}
+
+/**
+ * Generate CSV from statement, send it for download
+ */
+function bosa_statement_get_csv($statement){
+  $rows = bosa_statement_clean_statement($statement);
+
   $filename = 'file.csv';
   header( "Content-Type: text/csv;charset=utf-8" );
   header( "Content-Disposition: attachment;filename=\"$filename\"" );
@@ -366,6 +382,46 @@ function bosa_statement_get_csv($statement){
   foreach ($rows as $fields){
     fputcsv($fp, $fields);
   }
-  fclose($fp);
-  exit();
+  die(fclose($fp));
+}
+
+/**
+ * Generate EXCEL spreadsheet from statement
+ */
+function bosa_statement_get_xls($statement){
+  $rows = bosa_statement_clean_statement($statement);
+
+  // PHPEccel library
+  include 'libraries/PHPExcel/Classes/PHPExcel.php';
+  include 'libraries/PHPExcel/Classes/PHPExcel/Writer/Excel2007.php';
+
+  // Create new PHPExcel object
+  $objPHPExcel = new PHPExcel();
+
+  // Add some data
+  $objPHPExcel->setActiveSheetIndex(0);
+
+  foreach($rows as $r_id => $row){
+    foreach($row as $c_id => $column){
+      // Convert column array key to numeric for use in
+      // spreadsheet.
+      $c_id_alpha = strtr($c_id, "0123456789", "ABCDEFGHIJ");
+
+      // Save column data to cell
+      $objPHPExcel->getActiveSheet()->SetCellValue($c_id_alpha.($r_id+1), $column);
+    }
+  }
+
+  $file = variable_get('file_temporary_path') . '/bosa_statement.xls';
+
+  // Save Excel 2007 file
+  $objWriter = new PHPExcel_Writer_Excel2007($objPHPExcel);
+  $objWriter->save($file);
+
+  $file_name = basename($file);
+
+  header("Content-Type: application/vnd.ms-excel");
+  header("Content-Disposition: attachment; filename=$file_name");
+  header("Content-Length: " . filesize($file));
+  die(readfile($file));
 }
