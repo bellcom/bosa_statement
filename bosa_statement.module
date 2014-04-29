@@ -165,25 +165,49 @@ function bosa_statement_form_submit($form, &$form_state){
  * with the wanted info.
  */
 function bosa_statement_get_statement($from, $to, $cancel = FALSE, $uid = FALSE){
+  // One does not simply fetch the lineitems sold for a defined period.
+  //
+  // There are:
+  //  Products with dates
+  //    - buy-on's for these products
+  //  Products without dates
+  //
+  // Further explanation
+  //   Products with dates:
+  //    Lineitems are fetched for the products that have a date, in the
+  //    defined period.
+  //
+  //    -buy-on's:
+  //     Are fetched for these products
+  //
+  //   Products without dates:
+  //    Lineitems for this product type are fetched by date.
+
   $grand_total_cancelled = 0;
   $grand_total;
 
+  // Get all product ids, for the specified period, that are either, "offer" or
+  // "repeated_product" types
   $sql = 'SELECT `entity_id`
     FROM  `field_data_field_offer_dato`
+    LEFT JOIN `commerce_product` ON
+      `commerce_product`.`product_id` = `field_data_field_offer_dato`.`entity_id`
     WHERE `field_offer_dato_value` >= :from
+    AND `commerce_product`.`type` IN (\'offer\', \'repeated_product\')
     AND `field_offer_dato_value` <= :to';
 
   $params = array(':from' => $from, ':to' => $to);
 
   // If a uid is sent, only show the users products.
   if($uid){
-  $sql = 'SELECT `entity_id`
-    FROM  `field_data_field_offer_dato`
-    LEFT JOIN `commerce_product` ON
-      `commerce_product`.`product_id` = `field_data_field_offer_dato`.`entity_id`
-    WHERE `field_offer_dato_value` >= :from
-    AND `field_offer_dato_value` <= :to
-    AND `commerce_product`.`uid` = :uid';
+    $sql = 'SELECT `entity_id`
+      FROM  `field_data_field_offer_dato`
+      LEFT JOIN `commerce_product` ON
+        `commerce_product`.`product_id` = `field_data_field_offer_dato`.`entity_id`
+      WHERE `field_offer_dato_value` >= :from
+      AND `commerce_product`.`type` IN (\'offer\', \'repeated_product\')
+      AND `field_offer_dato_value` <= :to
+      AND `commerce_product`.`uid` = :uid';
 
     $params[':uid'] = $uid;
   }
@@ -209,6 +233,59 @@ function bosa_statement_get_statement($from, $to, $cancel = FALSE, $uid = FALSE)
 
   $line_item_ids = array_keys( array_shift( $query->execute() ) );
 
+  //
+  // Fetch all lineitems for products, that dont have a date
+  //
+  $sql = 'SELECT `line_item_id`, `product_id` FROM `commerce_line_item` l
+          LEFT JOIN `commerce_product` c ON
+            c.`sku` LIKE l.`line_item_label`
+          WHERE l.`line_item_label` IN (
+                SELECT  `sku`
+                FROM  `commerce_product`
+                WHERE `type` NOT IN (\'offer\', \'repeated_product\', \'offer_extras_custom\')
+                AND `uid` LIKE :uid
+          )
+          AND l.`created` > :from
+          AND l.`created` < :to';
+
+  $params = array(
+    ':to' => strtotime($to),
+    ':from' => strtotime($from),
+    ':uid' => '%'
+  );
+  if($uid){
+    $params[':uid'] = $uid;
+  }
+
+  $query = db_query($sql, $params);
+
+  $result = $query->fetchAll();
+
+  foreach($result as $dbrow){
+    $line_item_ids[] = $dbrow->line_item_id;
+    // Product ids are added, we need to get buy-on's for
+    // products without dates as well.
+    $product_ids[] = $dbrow->product_id;
+  }
+
+  //
+  // Fetch all extra product lineitem ids
+  //
+  $sql = 'SELECT `entity_id`
+          FROM  `field_data_field_line_item_ref`
+          WHERE  `field_line_item_ref_value` IN (:product_ids)';
+
+  $params = array(':product_ids' => $product_ids);
+
+  $query = db_query($sql, $params);
+
+  $result = $query->fetchAll();
+
+  foreach($result as $dbrow){
+    $line_item_ids[] = $dbrow->entity_id;
+  }
+
+  // Load all lineitems
   $line_items = commerce_line_item_load_multiple($line_item_ids);
 
   // The statement shows a row per lineitem.
@@ -345,11 +422,32 @@ function bosa_statement_get_statement($from, $to, $cancel = FALSE, $uid = FALSE)
     }
   }
 
+  // Sort the rows
+  uasort($row, 'bosa_statement_sort_list');
+
   // Bottom row, with grand total.
   $row[] = array('', '', '', '', '', '',  $grand_total, $grand_total_cancelled);
+
+
   return $row;
 }
 
+/**
+ * Sorting callback
+ *
+ * Sort by ordernumber, descending
+ */
+function bosa_statement_sort_list($a, $b){
+  if($a[0] == $b[0]){
+    return;
+  }
+
+  return ($a[0] > $b[0]) ? -1 : 1;
+}
+
+/**
+ * Recursively strip tags from statement
+ */
 function bosa_statement_clean_statement($statement){
    // The statement we get, is intended for rendering as HTML,
   // so we need to clean up the tags, to make it presentable
