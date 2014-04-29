@@ -20,7 +20,7 @@ function bosa_statement_menu(){
     'page callback' => 'drupal_get_form',
     'page arguments' => array('bosa_statement_form'),
     'access callback' => 'bosa_statement_access',
-    'access arguments' => array(1),
+    'access arguments' => array(3),
   );
 
   return $items;
@@ -97,7 +97,7 @@ function bosa_statement_form($form, $form_state){
     'Ordredato',
     'Kundenavn/adr',
     'Produkttitel',
-    'Endhedspris',
+    'Enhedspris',
     'Mængde / antal personer',
     'I alt omsætning',
     'Aflyst'
