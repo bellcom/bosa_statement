@@ -455,6 +455,7 @@ function bosa_statement_clean_statement($statement){
   foreach ($statement as $value){
     $row = array();
     foreach($value as $column){
+      $column = str_replace('<br>', ', ', $column);
       $row[] = strip_tags($column);
     }
 
